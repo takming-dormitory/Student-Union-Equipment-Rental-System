@@ -411,29 +411,40 @@ def return_by_student(data: dict):
 def cron_check():
     sync_settings()
     sync_log()
-    limit_days = int(system_settings.get("借用天數限制", 14))
-    webhook = system_settings.get("Discord逾期網址")
     
-    if not webhook or "http" not in webhook: return {"status": "no webhook"}
+    # 🌟 防呆 1：如果天數亂填或空白，強制當作 14 天
+    raw_limit = system_settings.get("借用天數限制", 14)
+    try:
+        limit_days = int(raw_limit)
+    except:
+        limit_days = 14
+        
+    webhook = system_settings.get("Discord逾期網址", "")
     
+    # 🌟 回報機制：如果沒設定網址，直接在網頁上印出警告
+    if not webhook or "http" not in webhook: 
+        return {"狀態": "失敗", "訊息": "尚未設定 Discord逾期網址 或網址格式錯誤"}
+        
     today = datetime.now() + timedelta(hours=8)
     overdue_list = []
     
     for tid, t in transactions.items():
         if t.get("狀態") in ["借用中", "核准"] and t.get("借用時間"):
             try:
-                b_date = datetime.strptime(t["借用時間"], "%Y-%m-%d %H:%M")
-                if (today - b_date).days > limit_days:
-                    overdue_list.append(f"⚠️ ID #{tid}: {t['租借人員姓名']} - {t['設備名稱']}")
-            except: pass
-            
+                # 🌟 防呆 2：把斜線自動換成橫槓，清掉多餘空白
+                b_time_str = str(t["借用時間"]).strip().replace("/", "-")
+                b_date = datetime.strptime(b_time_str, "%Y-%m-%d %H:%M")
+                
+                overdue_days = (today - b_date).days
+                if overdue_days > limit_days:
+                    # 🌟 防呆 3：兼容您的兩種學號欄位名稱
+                    name = t.get('借用人姓名', t.get('租借人員姓名', '未知'))
+                    overdue_list.append(f"⚠️ #{tid}: {name} - {t['設備名稱']} (已借 {overdue_days} 天)")
+            except Exception as e:
+                pass # 遇到格式壞掉的單筆資料，直接跳過不當機
+                
     if overdue_list:
-        msg = "🚨 **【逾期未歸還名單】**\n" + "\n".join(overdue_list)
-        send_discord_notify(msg, webhook)
-    
-    return {"status": "done", "found": len(overdue_list)}
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        send_discord_notify("🚨 **逾期未歸還清單**\n" + "\n".join(overdue_list), webhook)
+        return {"狀態": "成功", "通知數量": len(overdue_list), "名單": overdue_list}
+    else:
+        return {"狀態": "成功", "訊息": "目前沒有逾期設備"}
